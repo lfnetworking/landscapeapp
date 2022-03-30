@@ -568,13 +568,13 @@ async function main () {
     .flatMap(({ children }) => children)
     .map(({ id }) => id)
 
-  itemsWithExtraFields.forEach(item => {
+  /*itemsWithExtraFields.forEach(item => {
     const { project, crunchbase, crunchbaseData, name } = item
     const { parents } = crunchbaseData
     if (hostedCategories.includes(project) && crunchbase !== settings.global.self && !parents.includes(settings.global.self)) {
       failOnMultipleErrors(`Project ${name} has been added to ${project} category but does not belong to ${settings.global.short_name}`);
     }
-  })
+  })*/
 
   if (hasFatalErrors()) {
     process.exit(1);
