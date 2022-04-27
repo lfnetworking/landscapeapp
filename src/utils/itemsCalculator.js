@@ -184,7 +184,7 @@ export const getGroupedItemsForContentMode = function(params, entries, landscape
   }
   if (params.mainContentMode === 'card-mode') {
     return getGroupedItems(params, entries)
-  } else if (landscapeSettings.isMain) {
+  } else if (landscapeSettings.isMain || params.mainContentMode === 'super-blueprint') {
     return getGroupedItemsForMainLandscape(params, entries, landscapeSettings);
   } else {
     return getGroupedItemsForAdditionalLandscape(params, entries, landscapeSettings)
