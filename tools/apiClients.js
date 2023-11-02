@@ -1,9 +1,9 @@
-import { env } from 'process';
-import { stringify, parse } from 'query-string';
-import axios from 'axios'
-import OAuth1 from 'oauth-1.0a'
-import crypto from 'crypto'
-import _ from 'lodash'
+const { env } = require('process');
+const { stringify, parse } = require('query-string');
+const axios = require('axios');
+const OAuth1 = require('oauth-1.0a');
+const crypto = require('crypto');
+const _ = require('lodash');
 
 ['GITHUB_KEY', 'TWITTER_KEYS'].forEach((key) => {
   if (!env[key]) {
@@ -62,8 +62,11 @@ const requestWithRetry = async ({ attempts = maxAttempts, resolveWithFullRespons
       const response = await axios(rest);
       return resolveWithFullResponse ? response : response.data
     } catch (ex) {
+
       const { response = {}, ...error } = ex
       const { status } = response
+
+      const isGithubIssue = (response?.data?.message || '').indexOf('is too large to list') !== -1;
 
       const message = [
         `Attempt #${maxAttempts - attempts + 1}`,
@@ -72,10 +75,12 @@ const requestWithRetry = async ({ attempts = maxAttempts, resolveWithFullRespons
       ].join(' ')
       if (key === keys[keys.length - 1]) {
         console.info(message);
+      } else {
+        console.info(`Failed to use key #${keys.indexOf(key)} of ${keys.length}`);
       }
       const rateLimited = retryStatuses.includes(status)
       const dnsError = error.code === 'ENOTFOUND' && error.syscall === 'getaddrinfo'
-      if (attempts <= 0 || (!rateLimited && !dnsError)) {
+      if (attempts <= 0 || (!rateLimited && !dnsError) || isGithubIssue) {
         throw ex;
       }
       lastEx = ex;
@@ -117,15 +122,15 @@ const ApiClient = ({ baseURL, applyKey, keys, defaultOptions = {}, defaultParams
   }
 };
 
-export const CrunchbaseClient = ApiClient({
+module.exports.CrunchbaseClient = ApiClient({
   baseURL: 'https://api.crunchbase.com/api/v4',
   defaultParams: { user_key: env.CRUNCHBASE_KEY_4 },
   defaultOptions: { followRedirect: true, maxRedirects: 5, timeout: 10 * 1000 }
 });
 
-export const GithubClient = ApiClient({
+module.exports.GithubClient = ApiClient({
   baseURL: 'https://api.github.com',
-  retryStatuses: [403], // Github returns 403 when rate limiting.
+  retryStatuses: [401, 403], // Github returns 403 when rate limiting.
   delayFn: error => {
     const rateLimitRemaining = parseInt(_.get(error, ['response', 'headers', 'x-ratelimit-remaining'], 1))
     const rateLimitReset = parseInt(_.get(error, ['response', 'headers', 'x-ratelimit-reset'], 1)) * 1000
@@ -150,7 +155,7 @@ export const GithubClient = ApiClient({
 
 const [consumerKey, consumerSecret, accessTokenKey, accessTokenSecret] = (env.TWITTER_KEYS || '').split(',');
 
-export const TwitterClient = ApiClient({
+module.exports.TwitterClient = ApiClient({
   baseURL: 'https://api.twitter.com/1.1',
   defaultOptions: {
     oauth: {
@@ -162,6 +167,6 @@ export const TwitterClient = ApiClient({
   }
 });
 
-export const YahooFinanceClient = ApiClient({
+module.exports.YahooFinanceClient = ApiClient({
   baseURL: 'https://query2.finance.yahoo.com',
 });

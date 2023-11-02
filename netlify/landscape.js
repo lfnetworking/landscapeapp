@@ -1,18 +1,9 @@
 // We will execute this script from a landscape build,
 // "prepublish": "cp yarn.lock _yarn.lock",
 // "postpublish": "rm _yarn.lock || true"
-const LANDSCAPEAPP = process.env.LANDSCAPEAPP || "latest"
 const remote = `root@${process.env.BUILD_SERVER}`;
-const dockerImage = 'netlify/build:xenial';
+const dockerImage = 'netlify/build:focal';
 const dockerHome = '/opt/buildhome';
-
-const systemName = require('child_process').execSync('lsb_release -a').toString();
-const is1604 = systemName.indexOf('16.04');
-console.info(systemName, is1604);
-if (!is1604) {
-  console.info('Please ensure that you have a 16.04 ubuntu image for this netlify project, current lsb_release -a', systemName);
-  process.exit(1);
-}
 
 const secrets = [
   process.env.CRUNCHBASE_KEY_4, process.env.TWITTER_KEYS, process.env.GITHUB_TOKEN, process.env.GITHUB_USER, process.env.GITHUB_KEY
@@ -39,27 +30,20 @@ const debug = function() {
   }
 }
 
-const runLocal = function(command, options = {}) {
-  const { assignFn, showOutputFn } = options;
+const runLocal = function(command, showProgress) {
 
   // report the output once every 5 seconds
   let lastOutput = { s: '', time: new Date().getTime() };
   let displayIfRequired = function(text) {
-    lastOutput.s = lastOutput.s + text;
-    if (showOutputFn && showOutputFn()) {
-      if (lastOutput.done || new Date().getTime() > lastOutput.time + 5 * 1000) {
-        console.info(lastOutput.s);
-        lastOutput.s = "";
-        lastOutput.time = new Date().getTime();
-      };
+    if (showProgress) {
+      console.info(text);
     }
+    lastOutput.s = lastOutput.s + text;
   }
+
   return new Promise(function(resolve) {
     var spawn = require('child_process').spawn;
     var child = spawn('bash', ['-lc',`set -e \n${command}`]);
-    if (assignFn) {
-      assignFn(child);
-    }
     let output = [];
     child.stdout.on('data', function(data) {
       const text = maskSecrets(data.toString('utf-8'));
@@ -92,72 +76,6 @@ const runLocalWithoutErrors = async function(command) {
   return result.text.trim();
 }
 
-let buildDone = false;
-let localPid;
-let remoteFailed = false;
-let localFailed = false;
-
-async function getPids() {
-  const result = await runLocalWithoutErrors(`ps`);
-  const lines = result.split('\n').map( (x) => x.trim()).filter( (x) => x).slice(1);
-  const pids = lines.map( (line) => line.split(' ')[0]);
-  console.info('pids:', pids);
-  return pids;
-}
-
-let initialPids;
-
-const makeLocalBuild = async function() {
-    const localOutput = await runLocal(`
-      # mkdir -p copy
-      # rsync -az --exclude="copy" . copy
-      # cd copy
-      . ~/.nvm/nvm.sh
-      npm pack @lfnetworking/interactive-landscape@${LANDSCAPEAPP}
-      tar xzf lfnetworking-interactive*
-      cd package
-      cp _yarn.lock yarn.lock
-      echo 0
-      nvm install
-      echo 1
-      nvm use
-      echo 2
-      npm install -g agentkeepalive --save
-      echo 3
-      npm install -g npm --no-progress
-      echo 4
-      npm install -g yarn@latest
-      echo 5
-      yarn >/dev/null
-      export NODE_OPTIONS="--unhandled-rejections=strict"
-      export JEST_OPTIONS="-i"
-      export USE_OLD_PUPPETEER=1
-      PROJECT_PATH=.. yarn build
-    `, { assignFn: (x) => localPid = x, showOutputFn: () => remoteFailed });
-
-    if (!buildDone) {
-      console.info('Local build finished, exit code:', localOutput.exitCode);
-      if (localOutput.exitCode !== 0) {
-        console.info(localOutput.text);
-        localFailed = true;
-        if (!remoteFailed) {
-          return;
-        } else {
-          process.exit(1);
-        }
-      }
-      buildDone = true;
-      await runLocalWithoutErrors(`
-          rm -rf netlify/dist || true
-          cp -r dist netlify
-          mv netlify/dist/functions netlify/functions
-          cp -r netlify/functions functions # Fix netlify bug
-        `);
-      process.exit(0);
-    } else {
-      console.info('Ignore local build');
-    }
-}
 const key = `
 -----BEGIN OPENSSH PRIVATE KEY-----
 ${(process.env.BUILDBOT_KEY || '').replace(/\s/g,'\n')}
@@ -166,7 +84,7 @@ ${(process.env.BUILDBOT_KEY || '').replace(/\s/g,'\n')}
 require('fs').writeFileSync('/tmp/buildbot', key);
 require('fs').chmodSync('/tmp/buildbot', 0o600);
 
-const runRemote = async function(command, options) {
+const runRemote = async function(command, count = 3) {
   const bashCommand = `
     nocheck=" -o StrictHostKeyChecking=no "
     ssh -i /tmp/buildbot $nocheck ${remote} << 'EOSSH'
@@ -174,8 +92,14 @@ const runRemote = async function(command, options) {
     ${command}
 EOSSH
 `
-  return await runLocal(bashCommand, options);
+  const result = await runLocal(bashCommand, true);
+  if (result.exitCode === 255 && count > 0) {
+    console.info(`Attempts to retry more: ${count}`);
+    return await runRemote(command, count - 1);
+  }
+  return result;
 };
+
 const runRemoteWithoutErrors = async function(command) {
   const result = await runRemote(command);
   console.info(result.text.trim());
@@ -186,15 +110,8 @@ const runRemoteWithoutErrors = async function(command) {
 
 const makeRemoteBuildWithCache = async function() {
   await runLocalWithoutErrors(`
-    echo extracting
-    mkdir tmpRemote
-    cd tmpRemote
-    rm -rf package || true
-    npm pack @lfnetworking/interactive-landscape@${LANDSCAPEAPP}
-    tar xzf lfnetworking-interactive*.tgz
-    cd ..
-    mv tmpRemote/package packageRemote
-    cp packageRemote/_yarn.lock packageRemote/yarn.lock
+    rm -rf packageRemote || true
+    git clone -b deploy --single-branch https://github.com/lfnetworking/landscapeapp packageRemote
   `);
 
   //how to get a hash based on our files
@@ -227,56 +144,6 @@ const makeRemoteBuildWithCache = async function() {
   const hash = getHash();
   const tmpHash = require('crypto').createHash('sha256').update(getTmpFile()).digest('hex');
   // lets guarantee npm install for this folder first
-  {
-    const buildCommand = [
-      "(ls . ~/.nvm/nvm.sh || (curl -s -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.35.3/install.sh | bash >/dev/null))",
-      ". ~/.nvm/nvm.sh",
-      `nvm install ${nvmrc}`,
-      `echo 0`,
-      `nvm use ${nvmrc}`,
-      `echo 1`,
-      `npm install -g agentkeepalive --save`,
-      `npm install -g npm --no-progress`,
-      `npm install -g yarn@latest`,
-      `cd /opt/repo/packageRemote`,
-      `yarn >/dev/null`
-    ].join(' && ');
-    const npmInstallCommand = `
-      mkdir -p /root/builds/node_cache
-      ls -l /root/builds/node_cache/${hash}/yarnLocal/unplugged 2>/dev/null || (
-          mkdir -p /root/builds/node_cache/${tmpHash}/{yarnLocal,nvm,yarnGlobal}
-          cp -r /root/builds/${folder}/packageRemote/.yarn/* /root/builds/node_cache/${tmpHash}/yarnLocal
-          chmod -R 777 /root/builds/node_cache/${tmpHash}
-          docker run --shm-size 1G --rm -t \
-            -v /root/builds/node_cache/${tmpHash}/yarnLocal:/opt/repo/packageRemote/.yarn \
-            -v /root/builds/node_cache/${tmpHash}/nvm:${dockerHome}/.nvm \
-            -v /root/builds/node_cache/${tmpHash}/yarnGlobal:${dockerHome}/.yarn \
-            -v /root/builds/${folder}:/opt/repo \
-            ${dockerImage} /bin/bash -lc "${buildCommand}"
-
-          ln -s /root/builds/node_cache/${tmpHash} /root/builds/node_cache/${hash} || (
-            rm -rf /root/builds/node_cache/${tmpHash}
-          )
-          echo "packages for ${hash} had been installed"
-      )
-      chmod -R 777 /root/builds/node_cache/${hash}
-    `;
-    debug(npmInstallCommand);
-    console.info(`Remote with cache: Installing npm packages if required`);
-    const output = await runRemote(npmInstallCommand);
-    console.info(`Remote with cache: Output from npm install: exit code: ${output.exitCode}`);
-    if (output.exitCode !== 0) {
-      console.info(output.text);
-      throw new Error('Remote with cahce: npm install failed');
-    }
-
-    const lines = output.text.split('\n');
-    const index = lines.indexOf(lines.filter( (line) => line.match(/added \d+ packages in/))[0]);
-    const filteredLines = lines.slice(index !== -1 ? index : 0).join('\n');
-    console.info(filteredLines || 'Reusing an existing folder for node');
-
-  }
-
   // do not pass REVIEW_ID because on failure we will run it locally and report
   // from there
   const vars = [
@@ -292,10 +159,16 @@ const makeRemoteBuildWithCache = async function() {
   const outputFolder = 'landscape' + getTmpFile();
   const buildCommand = [
     `cd /opt/repo/packageRemote`,
+    "(ls . ~/.nvm/nvm.sh || (curl -s -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.35.3/install.sh | bash >/dev/null))",
     `. ~/.nvm/nvm.sh`,
+    `cat .nvmrc`,
     `nvm install ${nvmrc}`,
     `nvm use ${nvmrc}`,
+    `npm install -g agentkeepalive --save`,
+    `npm install -g npm@9 --no-progress`,
+    `npm install -g yarn@latest`,
     `yarn`,
+    `git config --global --add safe.directory /opt/repo`,
     `export NODE_OPTIONS="--unhandled-rejections=strict"`,
     `PROJECT_PATH=.. yarn run build`,
     `cp -r /opt/repo/dist /dist`
@@ -305,16 +178,12 @@ const makeRemoteBuildWithCache = async function() {
       mkdir -p /root/builds/${outputFolder}
       chmod -R 777 /root/builds/${outputFolder}
       chmod -R 777 /root/builds/${folder}
-      chmod -R 777 /root/builds/node_cache/${hash}
 
       docker run --shm-size 1G --rm -t \
         ${vars.map( (v) => ` -e ${v}="${process.env[v]}" `).join(' ')} \
         -e NVM_NO_PROGRESS=1 \
         -e NETLIFY=1 \
         -e PARALLEL=TRUE \
-        -v /root/builds/node_cache/${hash}/yarnLocal:/opt/repo/packageRemote/.yarn \
-        -v /root/builds/node_cache/${hash}/nvm:${dockerHome}/.nvm \
-        -v /root/builds/node_cache/${hash}/yarnGlobal:${dockerHome}/.yarn \
         -v /root/builds/${folder}:/opt/repo \
         -v /root/builds/${outputFolder}:/dist \
         ${dockerImage} /bin/bash -lc "${buildCommand}"
@@ -346,31 +215,16 @@ const makeRemoteBuildWithCache = async function() {
       rsync -az --chmod=a+r -p -e "ssh -i /tmp/buildbot  -o StrictHostKeyChecking=no " ${remote}:/root/builds/${outputFolder}/dist/* distRemote
     `
   ));
-  await runRemoteWithoutErrors(
+  await runRemote(
     `
       rm -rf /root/builds/${folder}
       rm -rf /root/builds/${outputFolder}
       `
   )
-  if (!buildDone) {
-    buildDone = true;
-    const newPids = await getPids();
-    const pidsToKill = newPids.filter( (x) => !initialPids.includes(x));
-    console.info(await runLocal(`kill -9 ${pidsToKill.join(' ')}`));
 
-    localPid.kill();
-
-    const pause = function(i) {
-      return new Promise(function(resolve) {
-        setTimeout(resolve, 5 * 1000);
-      })
-    };
-    await pause(); // allow the previous process to be killed
-    await runLocalWithoutErrors(`ps`);
-
-    console.info('Remote build done!');
-    console.info(output.text);
-    await runLocalWithoutErrors(`
+  console.info('Remote build done!');
+  console.info(output.text);
+  await runLocalWithoutErrors(`
       rm -rf netlify/dist || true
       rm -rf dist || true
       mkdir -p netlify/dist
@@ -380,33 +234,24 @@ const makeRemoteBuildWithCache = async function() {
       mv netlify/dist/functions netlify/functions
       cp -r netlify/functions functions # Fix netlify bug
     `);
-    process.exit(0);
-  }
+  process.exit(0);
 }
 
 async function main() {
-  const path = require('path');
   console.info('starting', process.cwd());
   process.chdir('..');
   await runLocal('rm package*.json');
 
-  initialPids = await getPids();
-
   const cleanPromise = runRemoteWithoutErrors(`
-    find builds/node_cache -maxdepth 1 -mtime +1 -exec rm -rf {} +;
     find builds/ -maxdepth 1 -not -path "builds/node_cache" -mtime +1 -exec rm -rf {} +;
-  `).catch(function(ex) {
+  `).catch(function() {
     console.info('Failed to clean up a builds folder');
   });
 
   await Promise.all([makeRemoteBuildWithCache().catch(function(ex) {
-    console.info('Remote build failed! Continuing with a local build', ex);
-    remoteFailed = true;
-    if (localFailed) {
-      process.exit(1);
-    }
-  }), makeLocalBuild(), cleanPromise]);
-
+    console.info('build failed', ex);
+    process.exit(1);
+  }), cleanPromise]);
 }
 
 main().catch(function(ex) {

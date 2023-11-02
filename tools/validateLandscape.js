@@ -1,13 +1,11 @@
-import process from 'process';
-import path from 'path';
-import { projectPath, settings } from './settings';
-import actualTwitter from './actualTwitter';
-import { setFatalError, reportFatalErrors } from './fatalErrors';
+const path = require('path');
+const { projectPath, settings } = require('./settings');
+const { actualTwitter } = require('./actualTwitter');
+const { setFatalError, reportFatalErrors } = require('./fatalErrors');
 
 async function main() {
 
   const source = require('js-yaml').load(require('fs').readFileSync(path.resolve(projectPath,'landscape.yml')));
-  const traverse = require('traverse');
   const _ = require('lodash');
 
   console.info('Processing the tree');
@@ -16,11 +14,13 @@ async function main() {
 
   const allowedKeys = [
     'name',
+    'second_path',
     'homepage_url',
     'logo',
     'twitter',
     'crunchbase',
     'repo_url',
+    'license',
     'project_org',
     'additional_repos',
     'stock_ticker',
@@ -58,7 +58,8 @@ async function main() {
 
   const validateRepos = ({ name, repo_url, branch, additional_repos }) => {
     const repos = [repo_url ? { repo_url, branch } : null, ...(additional_repos || [])].filter(_ => _)
-    for (const { repo_url, branch, ...rest } of repos) {
+    for (const repoEntry of repos) {
+      const { repo_url } = repoEntry;
       if (!repo_url) {
         errors.push(`item ${name} must have repo_url set`)
       } else if (repo_url.indexOf('https://github.com') >= 0 && !repo_url.match(new RegExp('^https://github\.com/[^/]+/[^/]+$'))) {
@@ -71,8 +72,10 @@ async function main() {
         }
       }
 
-      for (let wrongKey in rest) {
-        addKeyError(`item ${name}`, `additional_repos.${wrongKey}`)
+      for (let wrongKey in repoEntry) {
+        if (wrongKey !== 'repo_url' && wrongKey !== 'branch') {
+          addKeyError(`item ${name}`, `additional_repos.${wrongKey}`)
+        }
       }
     }
   }
