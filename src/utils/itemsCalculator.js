@@ -130,7 +130,7 @@ const bigPictureSortOrder = [
   }
 ];
 
-export const getGroupedItemsForContentMode = function(params, entries, landscapeSettings = null) {
+const getGroupedItemsForContentMode = function(params, entries, landscapeSettings = null) {
   if (!landscapeSettings) {
     landscapeSettings = findLandscapeSettings(params.mainContentMode);
   }
