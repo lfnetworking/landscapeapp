@@ -143,15 +143,8 @@ const getGroupedItemsForContentMode = function(params, entries, landscapeSetting
   }
 }
 
-const getGroupedItemsForMainLandscape = createSelector(
-  [ getFilteredItemsForBigPicture,
-    (_, entries) => entries,
-    (params) => params.grouping,
-    (params) => params.filters,
-    (params) => params.sortField,
-    (params, entries, landscapeSettings) => landscapeSettings
-  ],
-  function(items, allItems, grouping, filters, sortField, landscapeSettings) {
+const getGroupedItemsForMainLandscape = function(items, allItems, grouping, filters, sortField, landscapeSettings) {
+  if (landscapeSettings.isMain) {
     const categories = getLandscapeCategories({landscapeSettings, landscape });
     const itemsMap = groupAndSort(items, bigPictureSortOrder);
 
@@ -207,7 +200,7 @@ const getGroupedItemsForMainLandscape = createSelector(
 
     return result;
   }
-}
+};
 
 module.exports.getLandscapeItems = function({landscapeSettings, items, guideIndex = {}}) {
   if (landscapeSettings.isMain) {
