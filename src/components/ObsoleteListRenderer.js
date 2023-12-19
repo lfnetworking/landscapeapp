@@ -22,11 +22,7 @@ const getDate = function(date) {
 const today = getDate(new Date());
 
 module.exports.render = function({items}) {
-  console.info(items[0], items[0].latestCommitDate);
-
   const old = _.orderBy( items.filter( (x) => x.latestCommitDate && new Date(x.latestCommitDate).getTime() + 3 * 30 * 86400 * 1000 < new Date().getTime()), 'latestCommitDate');
-
-  console.info(old.map( (x) => x.name));
 
   return `
     <head>
